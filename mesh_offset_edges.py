@@ -32,7 +32,7 @@ bl_info = {
     "category": "Mesh"}
 
 import math
-from math import sin, cos, pi
+from math import sin, cos, pi, copysign
 import bpy
 import bmesh
 from mathutils import Vector
@@ -298,7 +298,7 @@ def get_cross_rail(vec_tan, vec_edge_r, vec_edge_l, normal_r, normal_l, threshol
     else:
         return None
 
-def do_offset(width, depth, verts, directions, geom_ex):
+def move_verts(width, depth, verts, directions, geom_ex):
     if geom_ex:
         geom_s = geom_ex['side']
         verts_ex = []
@@ -568,23 +568,34 @@ class OffsetEdges(bpy.types.Operator):
 
         layout.prop(self, 'mirror_modifier')
 
-    def execute(self, context):
-        #time_start = perf_counter()
-
-        edit_object = context.edit_object
-        me = edit_object.data
-
+    def get_bmesh(self, me, to_object_mode=True):
+        # This method should be called in edit mode.
         bpy.ops.object.editmode_toggle()
+        # In object mode
         bm = bmesh.new()
         bm.from_mesh(me)
+        if not to_object_mode:
+            bpy.ops.object.editmode_toggle()
+            # In edit mode
 
+        return bm
+
+    def bm_to_mesh_free(self, bm, me):
+        # This method should be called in edit mode.
+        bpy.ops.object.editmode_toggle()
+        # In object mode
+        bm.to_mesh(me)
+        bm.free()
+        bpy.ops.object.editmode_toggle()
+        # In edit mode
+
+    def do_offset(self, bm, edit_object):
+        #time_start = perf_counter()
         set_offset_edges = collect_offset_edges(bm)
         if set_offset_edges is None:
             self.report({'WARNING'},
                         "No edges selected.")
-            bm.free()
-            bpy.ops.object.editmode_toggle()
-            return {'CANCELLED'}
+            return False
 
         if self.mirror_modifier:
             mirror_planes = collect_mirror_planes(edit_object)
@@ -601,9 +612,7 @@ class OffsetEdges(bpy.types.Operator):
         if loops is None:
             self.report({'WARNING'},
                         "Overlap detected. Select non-overlap edge loops")
-            bm.free()
-            bpy.ops.object.editmode_toggle()
-            return {'CANCELLED'}
+            return False
 
 
         if self.depth_mode == 'angle':
@@ -636,28 +645,81 @@ class OffsetEdges(bpy.types.Operator):
                 follow_face=follow_face, edge_rail=edge_rail,
                 edge_rail_only_end=er_only_end, threshold=threshold)
             if verts:
-                do_offset(width, depth, verts, directions, geom_ex)
+                move_verts(width, depth, verts, directions, geom_ex)
 
         clean(bm, self.geometry_mode, set_offset_edges, geom_ex)
-
-        bm.to_mesh(me)
-        bm.free()
-        bpy.ops.object.editmode_toggle()
-
         #print("Time of offset_edges: ", perf_counter() - time_start)
-        return {'FINISHED'}
+
+        return bm
+
+    def execute(self, context):
+        # In edit mode
+        edit_object = context.edit_object
+        me = edit_object.data
+
+        bm = self.get_bmesh(me, to_object_mode=True)
+        # In object mode
+
+        if self.do_offset(bm, edit_object):
+            bm.to_mesh(me)
+            bpy.ops.object.editmode_toggle()
+            # In edit mode
+            return {'FINISHED'}
+        else:
+            bm.free()
+            bpy.ops.object.editmode_toggle()
+            # In edit mode
+            return {'CANCELLED'}
+
+    def modal(self, context, event):
+        # In edit mode
+        if event.type == 'MOUSEMOVE':
+            vec_delta = Vector((event.mouse_x, event.mouse_y)) - self._initial_mouse
+            #self.width = copysign(vec_delta.length, vec_delta.dot(X_UP)) * 0.01
+            self.width = vec_delta.x * 0.01
+            #self.angle = vec_delta.y * 0.01
+            _bm = self.do_offset(self._bm.copy(), context.edit_object)
+            if _bm:
+                context.area.header_text_set("Width {: .4}".format(self.width))
+                self.bm_to_mesh_free(_bm, self._me)
+                return {'RUNNING_MODAL'}
+            else:
+                context.area.header_text_set()
+                _bm.free()
+                self.bm_to_mesh_free(self._bm, self._me)
+                return {'CANCELLED'}
+        elif event.type == 'LEFTMOUSE':
+            context.area.header_text_set()
+            self._bm.free()
+            return {'FINISHED'}
+        elif event.type in {'RIGHTMOUSE', 'ESC'}:
+            context.area.header_text_set()
+            self.bm_to_mesh_free(self._bm, self._me)
+            return {'CANCELLED'}
+
+        return {'RUNNING_MODAL'}
 
     def invoke(self, context, event):
+        # In edit mode
         edit_object = context.edit_object
         me = edit_object.data
         bpy.ops.object.editmode_toggle()
+        # In object mode
         for p in me.polygons:
             if p.select:
                 self.follow_face = True
                 break
         bpy.ops.object.editmode_toggle()
+        # In edit mode
 
-        return self.execute(context)
+        if context.space_data.type == 'VIEW_3D':
+            self._me = me
+            self._bm = self.get_bmesh(me, to_object_mode=False)
+            self._initial_mouse = Vector((event.mouse_x, event.mouse_y))
+            context.window_manager.modal_handler_add(self)
+            return {'RUNNING_MODAL'}
+        else:
+            return self.execute(context)
 
 
 def draw_item(self, context):
