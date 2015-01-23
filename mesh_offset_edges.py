@@ -484,15 +484,6 @@ def get_directions(lp, vec_upward, normal_fallback, vert_mirror_pairs, **options
     else:
         return None, None
 
-def bm_to_mesh_free(bm, me):
-    # This method should be called in edit mode.
-    bpy.ops.object.editmode_toggle()
-    # In object mode
-    bm.to_mesh(me)
-    bm.free()
-    bpy.ops.object.editmode_toggle()
-    # In edit mode
-
 class OffsetEdges(bpy.types.Operator):
     """Offset Edges."""
     bl_idname = "mesh.offset_edges"
@@ -578,24 +569,6 @@ class OffsetEdges(bpy.types.Operator):
             row.prop(self, 'edge_rail_only_end', text="OnlyEnd", toggle=True)
 
         layout.prop(self, 'mirror_modifier')
-
-    def get_bmesh(self, me):
-        # This method should be called in edit mode, out in object mode.
-        bpy.ops.object.editmode_toggle()
-        # In object mode
-        bm = bmesh.new()
-        bm.from_mesh(me)
-
-        return bm
-
-    def bm_to_mesh_free(self, bm, me):
-        # This method should be called in edit mode.
-        bpy.ops.object.editmode_toggle()
-        # In object mode
-        bm.to_mesh(me)
-        bm.free()
-        bpy.ops.object.editmode_toggle()
-        # In edit mode
 
     def do_offset_and_free(self, bm, offset_infos, edges_orig_ixs, me):
         # This method should be called in object mode.
