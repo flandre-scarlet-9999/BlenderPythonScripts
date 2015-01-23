@@ -541,7 +541,6 @@ class OffsetEdges(bpy.types.Operator):
         description="Angle threshold which determines straight or folding edges",
         options={'HIDDEN'})
 
-    _bm_cache = None
     _offset_infos_cache = None
     _edges_orig_ixs_cache = None
 
@@ -599,6 +598,7 @@ class OffsetEdges(bpy.types.Operator):
         # In edit mode
 
     def do_offset_and_free(self, bm, offset_infos, edges_orig_ixs, me):
+        # This method should be called in object mode.
         bmverts = tuple(bm.verts)
         bmedges = tuple(bm.edges)
         edges_orig = [bmedges[ix] for ix in edges_orig_ixs]
@@ -629,23 +629,17 @@ class OffsetEdges(bpy.types.Operator):
         bm.to_mesh(me)
         bm.free()
 
-    def get_offset_infos(self, edit_object):
-        # This method should be called in object mode.
-        #time_start = perf_counter()
+    def get_offset_infos(self, bm, edit_object):
         if self._offset_infos_cache is not None and not self.state_changed():
-            return None, self._offset_infos_cache, self._edges_orig_ixs_cache
+            return self._offset_infos_cache, self._edges_orig_ixs_cache
 
         print("Preparing offset...")
-
-        me = edit_object.data
-        bm = bmesh.new()
-        bm.from_mesh(me)
 
         set_edges_orig = collect_edges(bm)
         if set_edges_orig is None:
             self.report({'WARNING'},
                         "No edges selected.")
-            return False, False, False
+            return False, False
 
         if self.mirror_modifier:
             mirror_planes = collect_mirror_planes(edit_object)
@@ -662,7 +656,7 @@ class OffsetEdges(bpy.types.Operator):
         if loops is None:
             self.report({'WARNING'},
                         "Overlap detected. Select non-overlap edge loops")
-            return False, False, False
+            return False, False
 
         vec_upward = (X_UP + Y_UP + Z_UP).normalized()
         # vec_upward is used to unify loop normals when follow_face is off.
@@ -689,7 +683,7 @@ class OffsetEdges(bpy.types.Operator):
         self._offset_infos_cache = offset_infos
         self._edges_orig_ixs_cache = edges_orig_ixs
         self.save_state()
-        return bm, offset_infos, edges_orig_ixs
+        return offset_infos, edges_orig_ixs
 
     def save_state(self):
         self._follow_face = self.follow_face
@@ -711,12 +705,12 @@ class OffsetEdges(bpy.types.Operator):
         # In object mode
 
         me = edit_object.data
-        bm, offset_infos, edges_orig_ixs = self.get_offset_infos(edit_object)
-        if bm is False:
+        bm = bmesh.new()
+        bm.from_mesh(me)
+
+        offset_infos, edges_orig_ixs = self.get_offset_infos(bm, edit_object)
+        if offset_infos is False:
             return {'CANCELLED'}
-        elif bm is None:
-            bm = bmesh.new()
-            bm.from_mesh(me)
 
         self.do_offset_and_free(bm, offset_infos, edges_orig_ixs, me)
 
@@ -724,31 +718,49 @@ class OffsetEdges(bpy.types.Operator):
         # In edit mode
         return {'FINISHED'}
 
+    def restore_original_and_free(self, context):
+        me = context.edit_object.data
+        bpy.ops.object.editmode_toggle()
+        # In object mode
+        self._bm_orig.to_mesh(me)
+        self._bm_orig.free()
+        context.area.header_text_set()
+        bpy.ops.object.editmode_toggle()
+        # In edit mode
+
     def modal(self, context, event):
         # In edit mode
         if event.type == 'MOUSEMOVE':
+            edit_object = context.edit_object
+
             vec_delta = Vector((event.mouse_x, event.mouse_y)) - self._initial_mouse
             #self.width = copysign(vec_delta.length, vec_delta.dot(X_UP)) * 0.01
             self.width = vec_delta.x * 0.01
             #self.angle = vec_delta.y * 0.01
-            _bm = self.do_offset(self._bm.copy(), context.edit_object)
-            if _bm:
+            offset_infos, edges_orig_ixs = self.get_offset_infos(self._bm_orig, edit_object)
+            if offset_infos is not False:
                 context.area.header_text_set("Width {: .4}".format(self.width))
-                self.bm_to_mesh_free(_bm, self._me)
+                bpy.ops.object.editmode_toggle()
+                # In object mode
+                self.do_offset_and_free(
+                    self._bm_orig.copy(), offset_infos, edges_orig_ixs, edit_object.data)
+                bpy.ops.object.editmode_toggle()
+                # In edit mode
                 return {'RUNNING_MODAL'}
             else:
                 context.area.header_text_set()
-                _bm.free()
-                self.bm_to_mesh_free(self._bm, self._me)
+                self.restore_original_and_free(context)
                 return {'CANCELLED'}
-        elif event.type == 'LEFTMOUSE':
-            context.area.header_text_set()
-            self._bm.free()
-            return {'FINISHED'}
+
         elif event.type in {'RIGHTMOUSE', 'ESC'}:
             context.area.header_text_set()
-            self.bm_to_mesh_free(self._bm, self._me)
+            self.restore_original_and_free(context)
             return {'CANCELLED'}
+
+        elif event.type == 'LEFTMOUSE':
+            context.area.header_text_set()
+            self._bm_orig.free()
+            return {'FINISHED'}
 
         return {'RUNNING_MODAL'}
 
@@ -762,17 +774,23 @@ class OffsetEdges(bpy.types.Operator):
             if p.select:
                 self.follow_face = True
                 break
-        bpy.ops.object.editmode_toggle()
-        # In edit mode
-        return self.execute(context)
+        #bpy.ops.object.editmode_toggle()
+        ## In edit mode
+        #return self.execute(context)
 
         if context.space_data.type == 'VIEW_3D':
-            self._me = me
-            self._bm = self.get_bmesh(me, to_object_mode=False)
+            _bm_orig = bmesh.new()
+            _bm_orig.from_mesh(me)
+            self._bm_orig = _bm_orig
+            self.angle = self.depth = .0
             self._initial_mouse = Vector((event.mouse_x, event.mouse_y))
             context.window_manager.modal_handler_add(self)
+            bpy.ops.object.editmode_toggle()
+            # In edit mode
             return {'RUNNING_MODAL'}
         else:
+            bpy.ops.object.editmode_toggle()
+            # In edit mode
             return self.execute(context)
 
 
