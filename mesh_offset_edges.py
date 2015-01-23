@@ -138,8 +138,8 @@ def collect_edges(bm):
 
     return set_edges_orig
 
-def collect_loops(set_offset_edges):
-    set_edges_copy = set_offset_edges.copy()
+def collect_loops(set_edges_orig):
+    set_edges_copy = set_edges_orig.copy()
 
     loops = []  # [v, e, v, e, ... , e, v]
     while set_edges_copy:
@@ -265,11 +265,11 @@ def get_adj_faces(edges):
     else:
         return None
 
-def get_edge_rail(vert, set_offset_edges):
+def get_edge_rail(vert, set_edges_orig):
     co_edge =  0
     vec_inner = None
     for e in vert.link_edges:
-        if not e.hide and e not in set_offset_edges:
+        if not e.hide and e not in set_edges_orig:
             v_other = e.other_vert(vert)
             vec = v_other.co - vert.co
             if vec != ZERO_VEC:
@@ -363,11 +363,11 @@ def collect_mirror_planes(edit_object):
                 mirror_planes.append((loc, norm_z, merge_limit))
     return mirror_planes
 
-def get_vert_mirror_pairs(set_offset_edges, mirror_planes):
+def get_vert_mirror_pairs(set_edges_orig, mirror_planes):
     if mirror_planes:
-        set_edges_copy = set_offset_edges.copy()
+        set_edges_copy = set_edges_orig.copy()
         vert_mirror_pairs = dict()
-        for e in set_offset_edges:
+        for e in set_edges_orig:
             v1, v2 = e.verts
             for mp in mirror_planes:
                 p_co, p_norm, mlimit = mp
@@ -384,7 +384,7 @@ def get_vert_mirror_pairs(set_offset_edges, mirror_planes):
                     set_edges_copy.remove(e)
         return vert_mirror_pairs, set_edges_copy
     else:
-        return None, set_offset_edges
+        return None, set_edges_orig
 
 def get_mirror_rail(mirror_plane, vec_up):
     p_norm = mirror_plane[1]
@@ -699,6 +699,7 @@ class OffsetEdges(bpy.types.Operator):
                 or self._threshold != self._threshold)
 
     def execute(self, context):
+        time1 = perf_counter()
         # In edit mode
         edit_object = context.edit_object
         bpy.ops.object.editmode_toggle()
@@ -716,6 +717,7 @@ class OffsetEdges(bpy.types.Operator):
 
         bpy.ops.object.editmode_toggle()
         # In edit mode
+        print("time :", perf_counter() - time1)
         return {'FINISHED'}
 
     def restore_original_and_free(self, context):
