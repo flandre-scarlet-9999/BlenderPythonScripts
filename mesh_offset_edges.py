@@ -445,7 +445,8 @@ def get_directions(lp, vec_upward, normal_fallback, vert_mirror_pairs, **options
             VERT_END = False
         ix_r, ix_l = get_adj_ix(i, vec_edges, HALF_LOOP)
         if ix_r is None:
-            break
+            # Length of this loop is zero.
+            return [], []
         vec_edge_r = vec_edges[ix_r]
         vec_edge_l = -vec_edges[ix_l]
 
@@ -479,10 +480,10 @@ def get_directions(lp, vec_upward, normal_fallback, vert_mirror_pairs, **options
         vec_up *= get_factor(vec_up, vec_edge_r, vec_edge_l)
         directions.append((vec_tan, vec_up))
 
-    if directions:
-        return verts, directions
-    else:
-        return None, None
+    return verts, directions
+
+def use_cashes(self, context):
+    self.caches_valid = True
 
 class OffsetEdges(bpy.types.Operator):
     """Offset Edges."""
@@ -494,27 +495,28 @@ class OffsetEdges(bpy.types.Operator):
         items=[('offset', "Offset", "Offset edges"),
                ('extrude', "Extrude", "Extrude edges"),
                ('move', "Move", "Move selected edges")],
-        name="Geometory mode", default='offset')
+        name="Geometory mode", default='offset',
+        update=use_cashes)
     width = bpy.props.FloatProperty(
-        name="Width", default=.2, precision=4, step=1)
+        name="Width", default=.2, precision=4, step=1, update=use_cashes)
     flip_width = bpy.props.BoolProperty(
         name="Flip Width", default=False,
-        description="Flip width direction")
+        description="Flip width direction", update=use_cashes)
     depth = bpy.props.FloatProperty(
-        name="Depth", default=.0, precision=4, step=1)
+        name="Depth", default=.0, precision=4, step=1, update=use_cashes)
     flip_depth = bpy.props.BoolProperty(
         name="Flip Depth", default=False,
-        description="Flip depth direction")
+        description="Flip depth direction", update=use_cashes)
     depth_mode = bpy.props.EnumProperty(
         items=[('angle', "Angle", "Angle"),
                ('depth', "Depth", "Depth")],
-        name="Depth mode", default='angle')
+        name="Depth mode", default='angle', update=use_cashes)
     angle = bpy.props.FloatProperty(
         name="Angle", default=0, step=.1, min=-4*pi, max=4*pi,
-        subtype='ANGLE', description="Angle")
+        subtype='ANGLE', description="Angle", update=use_cashes)
     flip_angle = bpy.props.BoolProperty(
         name="Flip Angle", default=False,
-        description="Flip Angle")
+        description="Flip Angle", update=use_cashes)
     follow_face = bpy.props.BoolProperty(
         name="Follow Face", default=False,
         description="Offset along faces around")
@@ -531,9 +533,12 @@ class OffsetEdges(bpy.types.Operator):
         name="Threshold", default=1.0e-4, step=.1, subtype='ANGLE',
         description="Angle threshold which determines straight or folding edges",
         options={'HIDDEN'})
+    caches_valid = bpy.props.BoolProperty(
+        name="Caches Valid", default=False,
+        options={'HIDDEN'})
 
-    _offset_infos_cache = None
-    _edges_orig_ixs_cache = None
+    _cache_offset_infos = None
+    _cache_edges_orig_ixs = None
 
     @classmethod
     def poll(self, context):
@@ -570,43 +575,12 @@ class OffsetEdges(bpy.types.Operator):
 
         layout.prop(self, 'mirror_modifier')
 
-    def do_offset_and_free(self, bm, offset_infos, edges_orig_ixs, me):
-        # This method should be called in object mode.
-        bmverts = tuple(bm.verts)
-        bmedges = tuple(bm.edges)
-        edges_orig = [bmedges[ix] for ix in edges_orig_ixs]
-        verts_directions = []
-        for ix_vs, directions in offset_infos:
-            verts = tuple(bmverts[ix] for ix in ix_vs)
-            verts_directions.append((verts, directions))
-
-        if self.geometry_mode == 'move':
-            geom_ex = None
-        else:
-            geom_ex = extrude_edges(bm, edges_orig)
-
-        if self.depth_mode == 'angle':
-            w = self.width if not self.flip_width else -self.width
-            angle = self.angle if not self.flip_angle else -self.angle
-            width = w * cos(angle)
-            depth = w * sin(angle)
-        else:
-            width = self.width if not self.flip_width else -self.width
-            depth = self.depth if not self.flip_depth else -self.depth
-
-        for verts, directions in verts_directions:
-            move_verts(width, depth, verts, directions, geom_ex)
-
-        clean(bm, self.geometry_mode, edges_orig, geom_ex)
-
-        bm.to_mesh(me)
-        bm.free()
-
     def get_offset_infos(self, bm, edit_object):
-        if self._offset_infos_cache is not None and not self.state_changed():
-            return self._offset_infos_cache, self._edges_orig_ixs_cache
+        if self.caches_valid and self._cache_offset_infos is not None:
+            # Return None, indicating to use cache.
+            return None, None
 
-        print("Preparing offset...")
+        time = perf_counter()
 
         set_edges_orig = collect_edges(bm)
         if set_edges_orig is None:
@@ -648,31 +622,67 @@ class OffsetEdges(bpy.types.Operator):
                 lp, vec_upward, normal_fallback, vert_mirror_pairs,
                 follow_face=follow_face, edge_rail=edge_rail,
                 edge_rail_only_end=er_only_end, threshold=threshold)
+            if verts:
+                offset_infos.append((verts, directions))
+
+        # Saving caches.
+        self._cache_offset_infos = _cache_offset_infos = []
+        for verts, directions in offset_infos:
             v_ixs = tuple(v.index for v in verts)
-            offset_infos.append((v_ixs, directions))
+            _cache_offset_infos.append((v_ixs, directions))
+        self._cache_edges_orig_ixs = tuple(e.index for e in set_edges_orig)
 
-        edges_orig_ixs = tuple(e.index for e in set_edges_orig)
+        print("OffsetEdges prepare: ", perf_counter() - time)
 
-        self._offset_infos_cache = offset_infos
-        self._edges_orig_ixs_cache = edges_orig_ixs
-        self.save_state()
-        return offset_infos, edges_orig_ixs
+        return offset_infos, set_edges_orig
 
-    def save_state(self):
-        self._follow_face = self.follow_face
-        self._edge_rail = self.edge_rail
-        self._edge_rail_only_end = self.edge_rail_only_end
-        self._mirror_modifier = self.mirror_modifier
-        self._threshold = self.threshold
-    def state_changed(self):
-        return (self._follow_face != self.follow_face
-                or self._edge_rail != self.edge_rail
-                or self._edge_rail_only_end != self.edge_rail_only_end
-                or self._mirror_modifier != self.mirror_modifier
-                or self._threshold != self._threshold)
+    def do_offset_and_free(self, bm, me, offset_infos=None, set_edges_orig=None):
+        # This method should be called in object mode.
+        # If offset_infos is None, use caches.
+        # Makes caches invalid after offset.
+
+        time = perf_counter()
+
+        if offset_infos is None:
+            # using cache
+            bmverts = tuple(bm.verts)
+            bmedges = tuple(bm.edges)
+            edges_orig = [bmedges[ix] for ix in self._cache_edges_orig_ixs]
+            verts_directions = []
+            for ix_vs, directions in self._cache_offset_infos:
+                verts = tuple(bmverts[ix] for ix in ix_vs)
+                verts_directions.append((verts, directions))
+        else:
+            verts_directions = offset_infos
+            edges_orig = list(set_edges_orig)
+
+        if self.depth_mode == 'angle':
+            w = self.width if not self.flip_width else -self.width
+            angle = self.angle if not self.flip_angle else -self.angle
+            width = w * cos(angle)
+            depth = w * sin(angle)
+        else:
+            width = self.width if not self.flip_width else -self.width
+            depth = self.depth if not self.flip_depth else -self.depth
+
+        # Extrude
+        if self.geometry_mode == 'move':
+            geom_ex = None
+        else:
+            geom_ex = extrude_edges(bm, edges_orig)
+
+        for verts, directions in verts_directions:
+            move_verts(width, depth, verts, directions, geom_ex)
+
+        clean(bm, self.geometry_mode, edges_orig, geom_ex)
+
+        bm.to_mesh(me)
+        bm.free()
+        self.caches_valid = False  # Make caches invalid.
+
+        print("OffsetEdges offset: ", perf_counter() - time)
 
     def execute(self, context):
-        time1 = perf_counter()
         # In edit mode
         edit_object = context.edit_object
         bpy.ops.object.editmode_toggle()
@@ -682,18 +692,19 @@ class OffsetEdges(bpy.types.Operator):
         bm = bmesh.new()
         bm.from_mesh(me)
 
-        offset_infos, edges_orig_ixs = self.get_offset_infos(bm, edit_object)
+        offset_infos, edges_orig = self.get_offset_infos(bm, edit_object)
         if offset_infos is False:
             return {'CANCELLED'}
 
-        self.do_offset_and_free(bm, offset_infos, edges_orig_ixs, me)
+        self.do_offset_and_free(bm, me, offset_infos, edges_orig)
 
         bpy.ops.object.editmode_toggle()
         # In edit mode
-        print("time :", perf_counter() - time1)
         return {'FINISHED'}
 
     def restore_original_and_free(self, context):
+        self.caches_valid = False  # Make caches invalid.
+
         me = context.edit_object.data
         bpy.ops.object.editmode_toggle()
         # In object mode
@@ -707,25 +718,25 @@ class OffsetEdges(bpy.types.Operator):
         # In edit mode
         if event.type == 'MOUSEMOVE':
             edit_object = context.edit_object
+            me = edit_object.data
 
             vec_delta = Vector((event.mouse_x, event.mouse_y)) - self._initial_mouse
             #self.width = copysign(vec_delta.length, vec_delta.dot(X_UP)) * 0.01
             self.width = vec_delta.x * 0.01
             #self.angle = vec_delta.y * 0.01
-            offset_infos, edges_orig_ixs = self.get_offset_infos(self._bm_orig, edit_object)
-            if offset_infos is not False:
-                context.area.header_text_set("Width {: .4}".format(self.width))
-                bpy.ops.object.editmode_toggle()
-                # In object mode
-                self.do_offset_and_free(
-                    self._bm_orig.copy(), offset_infos, edges_orig_ixs, edit_object.data)
-                bpy.ops.object.editmode_toggle()
-                # In edit mode
-                return {'RUNNING_MODAL'}
-            else:
+            offset_infos, _ = self.get_offset_infos(self._bm_orig, edit_object)
+            if offset_infos is False:
                 context.area.header_text_set()
                 self.restore_original_and_free(context)
                 return {'CANCELLED'}
+            else:
+                context.area.header_text_set("Width {: .4}".format(self.width))
+                bpy.ops.object.editmode_toggle()
+                # In object mode
+                self.do_offset_and_free(self._bm_orig.copy(), me)
+                bpy.ops.object.editmode_toggle()
+                # In edit mode
+                return {'RUNNING_MODAL'}
 
         elif event.type in {'RIGHTMOUSE', 'ESC'}:
             context.area.header_text_set()
@@ -735,6 +746,7 @@ class OffsetEdges(bpy.types.Operator):
         elif event.type == 'LEFTMOUSE':
             context.area.header_text_set()
             self._bm_orig.free()
+            self.caches_valid = False  # Make caches invalid
             return {'FINISHED'}
 
         return {'RUNNING_MODAL'}
@@ -753,7 +765,8 @@ class OffsetEdges(bpy.types.Operator):
         ## In edit mode
         #return self.execute(context)
 
-        if context.space_data.type == 'VIEW_3D':
+        self.caches_valid = False
+        if context.space_data and context.space_data.type == 'VIEW_3D':
             _bm_orig = bmesh.new()
             _bm_orig.from_mesh(me)
             self._bm_orig = _bm_orig
