@@ -590,12 +590,15 @@ class OffsetEdges(bpy.types.Operator):
 
         if self.mirror_modifier:
             mirror_planes = collect_mirror_planes(edit_object)
-            vert_mirror_pairs, set_edges_orig = \
+            vert_mirror_pairs, set_edges = \
                 get_vert_mirror_pairs(set_edges_orig, mirror_planes)
 
-            if not set_edges_orig:
-                self.report({'WARNING'},
-                            "All selected edges are on mirror planes.")
+            if set_edges:
+                set_edges_orig = set_edges
+            else:
+                #self.report({'WARNING'},
+                #            "All selected edges are on mirror planes.")
+                vert_mirror_pairs = None
         else:
             vert_mirror_pairs = None
 
