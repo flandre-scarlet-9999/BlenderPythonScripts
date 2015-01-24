@@ -80,7 +80,7 @@ def get_corner_type(vec_up, vec_right2d, vec_left2d, threshold=1.0e-4):
         return 'FOLDING'
     elif angle > ANGLE_180 - threshold:
         return 'STRAIGHT'
-    elif vec_right2d.cross(vec_left2d).dot(vec_up) > threshold:
+    elif vec_right2d.cross(vec_left2d).dot(vec_up) > .0:
         return 'CONVEX'
     else:
         return 'CONCAVE'
@@ -468,7 +468,7 @@ def get_directions(lp, vec_upward, normal_fallback, vert_mirror_pairs, **options
                 # Get cross rail.
                 # Cross rail is a cross vector between normal_r and normal_l.
                 rail = get_cross_rail(vec_tan, vec_edge_r, vec_edge_l,
-                                            normal_r, normal_l, opt_threshold)
+                                      normal_r, normal_l, opt_threshold)
             if rail:
                 vec_tan = vec_tan.project(rail)
                 vec_tan.normalize()
@@ -533,6 +533,9 @@ class OffsetEdges(bpy.types.Operator):
         name="Threshold", default=1.0e-5, step=.1, subtype='ANGLE',
         description="Angle threshold which determines straight or folding edges",
         options={'HIDDEN'})
+    interactive = bpy.props.BoolProperty(
+        name="Interactive", default=False,
+        options={'HIDDEN'})
     caches_valid = bpy.props.BoolProperty(
         name="Caches Valid", default=False,
         options={'HIDDEN'})
@@ -574,6 +577,8 @@ class OffsetEdges(bpy.types.Operator):
             row.prop(self, 'edge_rail_only_end', text="OnlyEnd", toggle=True)
 
         layout.prop(self, 'mirror_modifier')
+
+        #layout.operator('mesh.offset_edges', text='Repeat')
 
     def get_offset_infos(self, bm, edit_object):
         if self.caches_valid and self._cache_offset_infos is not None:
@@ -707,6 +712,7 @@ class OffsetEdges(bpy.types.Operator):
 
     def restore_original_and_free(self, context):
         self.caches_valid = False  # Make caches invalid.
+        context.area.header_text_set()
 
         me = context.edit_object.data
         bpy.ops.object.editmode_toggle()
@@ -729,7 +735,6 @@ class OffsetEdges(bpy.types.Operator):
             #self.angle = vec_delta.y * 0.01
             offset_infos, _ = self.get_offset_infos(self._bm_orig, edit_object)
             if offset_infos is False:
-                context.area.header_text_set()
                 self.restore_original_and_free(context)
                 return {'CANCELLED'}
             else:
@@ -742,7 +747,6 @@ class OffsetEdges(bpy.types.Operator):
                 return {'RUNNING_MODAL'}
 
         elif event.type in {'RIGHTMOUSE', 'ESC'}:
-            context.area.header_text_set()
             self.restore_original_and_free(context)
             return {'CANCELLED'}
 
@@ -769,7 +773,8 @@ class OffsetEdges(bpy.types.Operator):
         #return self.execute(context)
 
         self.caches_valid = False
-        if context.space_data and context.space_data.type == 'VIEW_3D':
+        if self.interactive and context.space_data.type == 'VIEW_3D':
+            self.interactive = False
             _bm_orig = bmesh.new()
             _bm_orig.from_mesh(me)
             self._bm_orig = _bm_orig
@@ -780,23 +785,41 @@ class OffsetEdges(bpy.types.Operator):
             # In edit mode
             return {'RUNNING_MODAL'}
         else:
+            self.interactive = False
             bpy.ops.object.editmode_toggle()
             # In edit mode
             return self.execute(context)
 
+class OffsetEdgesMenu(bpy.types.Menu):
+    bl_idname = "VIEW3D_MT_edit_mesh_edges_offset"
+    bl_label = "Offset Edges"
+
+    def draw(self, context):
+        layout = self.layout
+        layout.operator_context = 'INVOKE_DEFAULT'
+
+        off = layout.operator('mesh.offset_edges', text='Offset')
+        off.geometry_mode = 'offset'
+
+        ext = layout.operator('mesh.offset_edges', text='Extrude')
+        ext.geometry_mode = 'extrude'
+
+        mov = layout.operator('mesh.offset_edges', text='Move')
+        mov.geometry_mode = 'move'
+
+        off.interactive = ext.interactive = mov.interactive = True
 
 def draw_item(self, context):
-    self.layout.operator_context = 'INVOKE_DEFAULT'
-    self.layout.operator_menu_enum('mesh.offset_edges', 'geometry_mode')
+    self.layout.menu("VIEW3D_MT_edit_mesh_edges_offset")
 
 
 def register():
-    bpy.utils.register_class(OffsetEdges)
+    bpy.utils.register_module(__name__)
     bpy.types.VIEW3D_MT_edit_mesh_edges.append(draw_item)
 
 
 def unregister():
-    bpy.utils.unregister_class(OffsetEdges)
+    bpy.utils.unregister_module(__name__)
     bpy.types.VIEW3D_MT_edit_mesh_edges.remove(draw_item)
 
 
