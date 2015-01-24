@@ -67,7 +67,7 @@ def calc_normal_from_verts(verts, fallback=Z_UP):
 
     return normal
 
-def get_corner_type(vec_up, vec_right2d, vec_left2d, threshold=1.0e-4):
+def get_corner_type(vec_up, vec_right2d, vec_left2d, threshold):
     # vec_right2d and vec_left2d should be perpendicular to vec_up.
     # All vectors in parameters should have been normalized.
     if vec_right2d == vec_left2d == ZERO_VEC:
@@ -85,7 +85,7 @@ def get_corner_type(vec_up, vec_right2d, vec_left2d, threshold=1.0e-4):
     else:
         return 'CONCAVE'
 
-def calc_tangent(vec_up, vec_right, vec_left, threshold=1.0e-4):
+def calc_tangent(vec_up, vec_right, vec_left, threshold):
     vec_right2d = vec_right- vec_right.project(vec_up)
     vec_right2d.normalize()
     vec_left2d = vec_left- vec_left.project(vec_up)
@@ -193,6 +193,16 @@ def reorder_loop(verts, edges, normal, adj_faces):
         if normal.dot(adj_f.normal) < .0:
             normal *= -1
         break
+    else:
+        # All elements in adj_faces are None
+        for v in verts:
+            if v.normal != ZERO_VEC:
+                if normal.dot(v.normal) < .0:
+                    verts.reverse()
+                    edges.reverse()
+                    normal *= -1
+                break
+
     return verts, edges, normal, adj_faces
 
 def get_adj_ix(ix_start, vec_edges, half_loop):
@@ -227,7 +237,7 @@ def get_adj_ix(ix_start, vec_edges, half_loop):
 
     return ix_right, ix_left
 
-def get_normals(lp_normal, ix_r, ix_l, adj_faces):
+def get_normals(lp_normal, adj_faces, ix_r, ix_l, vert):
     normal_r = normal_l = None
     if adj_faces:
         f_r, f_l = adj_faces[ix_r], adj_faces[ix_l]
@@ -235,6 +245,10 @@ def get_normals(lp_normal, ix_r, ix_l, adj_faces):
             normal_r = f_r.normal
         if f_l:
             normal_l = f_l.normal
+        if f_r is None and f_l is None:
+            # Use vert normal
+            if vert.normal != ZERO_VEC:
+                normal_r = vert.normal
 
     if normal_r and normal_l:
         vec_up = (normal_r + normal_l).normalized()
@@ -252,43 +266,59 @@ def get_adj_faces(edges):
     adj_exist = False
     for e in edges:
         face = None
+        co_adj = 0
         for f in e.link_faces:
             # Search an adjacent face.
             # Selected face has precedance.
             if not f.hide and f.normal != ZERO_VEC:
-                face = f
                 adj_exist = True
-                if f.select: break
-        adj_faces.append(face)
+                face = f
+                co_adj += 1
+                if f.select:
+                    adj_faces.append(f)
+                    break
+        else:
+            if co_adj == 1:
+                adj_faces.append(face)
+            else:
+                adj_faces.append(None)
     if adj_exist:
         return adj_faces
     else:
         return None
 
 def get_edge_rail(vert, set_edges_orig):
-    co_edge =  0
+    co_edges = co_edges_selected = 0
     vec_inner = None
     for e in vert.link_edges:
-        if not e.hide and e not in set_edges_orig:
+        if (e not in set_edges_orig and
+           (e.select or (co_edges_selected == 0 and not e.hide))):
             v_other = e.other_vert(vert)
             vec = v_other.co - vert.co
             if vec != ZERO_VEC:
-                co_edge += 1
                 vec_inner = vec
-                if co_edge == 2:
-                    return None
-    else:
+                if e.select:
+                    co_edges_selected += 1
+                    if co_edges_selected == 2:
+                        return None
+                else:
+                    co_edges += 1
+    if co_edges_selected == 1:
         return vec_inner
+    elif co_edges == 1:
+        # No selected edges, one unselected edge.
+        return vec_inner
+    else:
+        return None
 
-def get_cross_rail(vec_tan, vec_edge_r, vec_edge_l, normal_r, normal_l, threshold=1.0e-4):
+def get_cross_rail(vec_tan, vec_edge_r, vec_edge_l, normal_r, normal_l, threshold):
     # Cross rail is a cross vector between normal_r and normal_l.
     angle = normal_r.angle(normal_l)
     if angle < threshold:
-        # normal_r and normal_l are almost same, no cross vector.
+        # normal_r and normal_l are almost same
         return None
 
     vec_cross = normal_r.cross(normal_l)
-    vec_cross.normalize()
     if vec_cross.dot(vec_tan) < .0:
         vec_cross *= -1
     cos_min = min(vec_tan.dot(vec_edge_r), vec_tan.dot(vec_edge_l))
@@ -450,25 +480,24 @@ def get_directions(lp, vec_upward, normal_fallback, vert_mirror_pairs, **options
         vec_edge_r = vec_edges[ix_r]
         vec_edge_l = -vec_edges[ix_l]
 
-        vec_up, normal_r, normal_l = get_normals(lp_normal, ix_r, ix_l, adj_faces)
+        vec_up, normal_r, normal_l = get_normals(lp_normal, adj_faces, ix_r, ix_l, v)
         vec_tan = calc_tangent(vec_up, vec_edge_r, vec_edge_l, opt_threshold)
 
         if vec_tan != ZERO_VEC:
-            # Project vec_tan to one of rail vector.
             rail = None
             if vert_mirror_pairs and VERT_END:
                 if v in vert_mirror_pairs:
                     rail, vec_up = get_mirror_rail(vert_mirror_pairs[v], vec_up)
             if opt_edge_rail:
                 # Get edge rail.
-                # edge rail is a vector of inner edge.
+                # edge rail is a vector of an inner edge.
                 if (not opt_er_only_end) or VERT_END:
                     rail = get_edge_rail(v, set_edges)
             if (not rail) and normal_r and normal_l:
                 # Get cross rail.
                 # Cross rail is a cross vector between normal_r and normal_l.
-                rail = get_cross_rail(vec_tan, vec_edge_r, vec_edge_l,
-                                      normal_r, normal_l, opt_threshold)
+                rail = get_cross_rail(
+                    vec_tan, vec_edge_r, vec_edge_l, normal_r, normal_l, opt_threshold)
             if rail:
                 vec_tan = vec_tan.project(rail)
                 vec_tan.normalize()
@@ -649,7 +678,7 @@ class OffsetEdges(bpy.types.Operator):
         # If offset_infos is None, use caches.
         # Makes caches invalid after offset.
 
-        time = perf_counter()
+        #time = perf_counter()
 
         if offset_infos is None:
             # using cache
@@ -688,7 +717,7 @@ class OffsetEdges(bpy.types.Operator):
         bm.free()
         self.caches_valid = False  # Make caches invalid.
 
-        print("OffsetEdges offset: ", perf_counter() - time)
+        #print("OffsetEdges offset: ", perf_counter() - time)
 
     def execute(self, context):
         # In edit mode
