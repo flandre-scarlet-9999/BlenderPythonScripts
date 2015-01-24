@@ -530,7 +530,7 @@ class OffsetEdges(bpy.types.Operator):
         name="Edge Rail Only End", default=False,
         description="Apply edge rail to end verts only")
     threshold = bpy.props.FloatProperty(
-        name="Threshold", default=1.0e-4, step=.1, subtype='ANGLE',
+        name="Threshold", default=1.0e-5, step=.1, subtype='ANGLE',
         description="Angle threshold which determines straight or folding edges",
         options={'HIDDEN'})
     caches_valid = bpy.props.BoolProperty(
